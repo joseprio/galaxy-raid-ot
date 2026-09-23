@@ -11,7 +11,7 @@
 
 ## I want to play
 
-Sure, [head over here](https://joseprio.github.io/js13k-2021/dist/index.html).
+Sure, [head over here](https://joseprio.github.io/galaxy-raid-ot/dist/index.html).
 
 To run from source:
 
