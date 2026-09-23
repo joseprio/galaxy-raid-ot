@@ -135,6 +135,10 @@ const SHIP_INITIAL_BOTTOM_MARGIN = 20;
 const BULLET_LEFT = 0;
 const BULLET_STRAIGHT = 1;
 const BULLET_RIGHT = 2;
+const BULLET_WIDE_LEFT = 3;
+const BULLET_WIDE_RIGHT = 4;
+// Horizontal drift per vertical unit for each bullet direction
+const BULLET_DRIFT = [-1 / 4, 0, 1 / 4, -1 / 2, 1 / 2];
 const BASE_MAGNET_SPEED = 0.2;
 const ADDITIONAL_MAGNET_SPEED = 0.1;
 
@@ -150,8 +154,29 @@ const UPGRADE_SIDE = 1;
 const UPGRADE_SHIELD = 2;
 const UPGRADE_BOMBS = 3;
 const UPGRADE_MAGNET = 4;
-const UPGRADE_NAMES = ["Main Gun", "Side Cannon", "Shield", "Bombs", "Magnet"];
-const MAX_UPGRADE = 4;
+const UPGRADE_SCRAP = 5;
+const UPGRADE_NAMES = [
+  "Main Gun",
+  "Side Cannon",
+  "Shield",
+  "Bombs",
+  "Magnet",
+  "Scrap",
+];
+const MAX_UPGRADE = 7;
+// Horizontal offsets of the main gun bullets for each upgrade level
+const MAIN_GUN_OFFSETS = [
+  [0],
+  [-13, 13],
+  [-13, 0, 13],
+  [-13, 13],
+  [-13, 0, 13],
+  [-20, -7, 7, 20],
+  [-26, -13, 0, 13, 26],
+  [-33, -20, -7, 7, 20, 33],
+];
+// Fire interval (ms) of the side cannon for upgrade levels 5 and above
+const SIDE_CANNON_INTERVALS = [160, 130, 100];
 
 const LEVEL_ENDGAME = 4;
 const LEVEL_SURVIVAL = 5;
@@ -170,16 +195,12 @@ let enemyBlueprints;
 
 const thrusters = generateThrusters();
 
-const smallBullet = [
-  generatePlayerBullet(5, -0.245),
-  generatePlayerBullet(5, 0),
-  generatePlayerBullet(5, 0.245),
-];
-const largeBullet = [
-  generatePlayerBullet(8, -0.245),
-  generatePlayerBullet(8, 0),
-  generatePlayerBullet(8, 0.245),
-];
+const smallBullet = BULLET_DRIFT.map((drift) =>
+  generatePlayerBullet(5, Math.atan(drift))
+);
+const largeBullet = BULLET_DRIFT.map((drift) =>
+  generatePlayerBullet(8, Math.atan(drift))
+);
 const enemyBullets = [
   generateEnemyBullet(4),
   generateEnemyBullet(7),
@@ -200,9 +221,11 @@ const settings = JSON.parse(localStorage["Galaxy Raid"] || 0) || {
   s: 0, // Stars
   u: UPGRADE_NAMES.map(() => 0), // Upgrades
   // c: 0, // Ship color
-  // f: 0, // Supporter free coins
+  // f: 0, // Extras free coins claimed
   // h: false, // Played initial intro cutscene
 };
+// Saves from older versions have fewer upgrades
+settings.u = UPGRADE_NAMES.map((name, index) => settings.u[index] || 0);
 
 let ship;
 let destroyedShipSprites;
@@ -245,6 +268,7 @@ let availableBombs;
 let inhibitEnter;
 let bulletRoundCount;
 let lastBullet;
+let lastSideBullet;
 let showCutscene = 0;
 
 let initialTime = performance.now();
@@ -492,9 +516,9 @@ let cutsceneChar;
 
 const mainMenuOption = ["\u21e6 Main Menu", showMainMenu];
 
-const TOTAL_SHIELDS = 5;
+const TOTAL_SHIELDS = MAX_UPGRADE + 1;
 
-const UPGRADE_COST = [10, 50, 100, 500];
+const UPGRADE_COST = [10, 50, 100, 500, 1000, 5000, 10000];
 
 const getUpgradesHUD = () => [
   ...UPGRADE_NAMES.map((name, index) => [
@@ -562,10 +586,7 @@ function showMainMenu() {
       settings[0] ? () => setHUD("Top Scores", getTopScoresHUD()) : 0,
     ],
     ["Cutscenes", () => setHUD("Cutscenes", getCutscenesHUD())],
-    [
-      "Supporter Options",
-      () => setHUD("Supporter Options", getSupporterOptionsHUD()),
-    ],
+    ["Extras", () => setHUD("Extras", getExtrasHUD())],
   ];
   if (process.env.DEBUG) {
     // Add debug buttons
@@ -585,7 +606,12 @@ function showMainMenu() {
       },
     ]);
   }
-  setHUD("Galaxy Raid", mainMenuOptions, 0, true);
+  setHUD(
+    "Galaxy Raid<small>Ot's Edition</small>",
+    mainMenuOptions,
+    0,
+    true
+  );
 }
 
 if (settings.h) {
@@ -699,42 +725,30 @@ function getCutscenesHUD() {
   return scenes;
 }
 
-function getSupporterOptionsHUD() {
-  const options = [];
-  const monetized =
-    process.env.DEBUG || document.monetization?.state == "started";
-  if (!monetized) {
-    options.push("Coil not detected");
-  }
-  options.push(
-    [
-      "Ship Color",
-      monetized && (() => setHUD("Ship Color", getShipColorHUD())),
-    ],
+function getExtrasHUD() {
+  return [
+    ["Ship Color", () => setHUD("Ship Color", getShipColorHUD())],
     [
       "Claim " + (1000).toLocaleString() + " \u267a",
-      monetized &&
-        !settings.f &&
+      !settings.f &&
         (() => {
           updateStars(1000);
           settings.f = true;
           updateSettings();
-          setHUD("Supporter Options", getSupporterOptionsHUD());
+          setHUD("Extras", getExtrasHUD());
         }),
     ],
     [
       "Unlock All Missions",
-      monetized &&
-        settings.l - LEVEL_SURVIVAL &&
+      settings.l - LEVEL_SURVIVAL &&
         (() => {
           settings.l = LEVEL_SURVIVAL;
           updateSettings();
-          setHUD("Supporter Options", getSupporterOptionsHUD());
+          setHUD("Extras", getExtrasHUD());
         }),
     ],
-    mainMenuOption
-  );
-  return options;
+    mainMenuOption,
+  ];
 }
 
 function getShipColorHUD() {
@@ -749,10 +763,7 @@ function getShipColorHUD() {
         setHUD("Ship Color", getShipColorHUD());
       },
     ],
-    [
-      "\u21e6 Back",
-      () => setHUD("Supporter Options", getSupporterOptionsHUD()),
-    ],
+    ["\u21e6 Back", () => setHUD("Extras", getExtrasHUD())],
   ];
   return options;
 }
@@ -1193,19 +1204,22 @@ function generateBoss() {
   destroyedBossSprites.push(createSprites(newBossShip));
 }
 
-function generateEnemy([shipSeed, layoutSeed, shipSize, ...more]) {
+function generateEnemy([shipSeed, layoutSeed, shipSize, ...more], level) {
   const enemyShip = trimCanvas(
     flipCanvas(
       generateShip(LEVEL_COLORS[currentLevel], shipSeed, layoutSeed, shipSize)
     )
   );
-  return [
+  const blueprint = [
     enemyShip,
     obtainImageData(enemyShip).data,
     hitEffect(enemyShip),
     createSprites(enemyShip),
     ...more,
   ];
+  // Level the ship belongs to, so survival drops the same fragments
+  blueprint[12] = level;
+  return blueprint;
 }
 
 function render(now) {
@@ -1237,7 +1251,7 @@ function newGame(level) {
 }
 
 function newGameStart() {
-  transitionText("Good Luck");
+  transitionText("Good Luck, Ot!");
   state = STATE_INTRO;
   enemyRandomizer = createNumberGenerator(enemyRandomizers[currentLevel]);
   nextEnemy = GAME_INTRO_DURATION + 1000;
@@ -1252,6 +1266,7 @@ function newGameStart() {
     (shipDestroyed =
       shipVictory =
       lastBullet =
+      lastSideBullet =
       bombEffect =
       score =
       gameOverTime =
@@ -1360,10 +1375,9 @@ function introRender(now) {
         currentSurvivalLoaded < enemyDefinitions.length)
     ) {
       // We're loading ALL enemies!
+      const level = currentSurvivalLoaded++;
       enemyBlueprints.push(
-        ...enemyDefinitions[currentSurvivalLoaded++].map((def) =>
-          generateEnemy(def)
-        )
+        ...enemyDefinitions[level].map((def) => generateEnemy(def, level))
       );
     } else {
       newGameStart();
@@ -1529,7 +1543,7 @@ function ShipFragment(
         maskData,
       ])
     ) {
-      updateStars(1);
+      updateStars(1 + settings.u[UPGRADE_SCRAP]);
       sounds.coin();
       // Returning undefined is falsish
     } else if (y < CANVAS_HEIGHT) {
@@ -1556,7 +1570,7 @@ function Bullet(x, y, bullets, bulletDirection, bulletPower, lastTime) {
   const [bullet, bulletMask] = bullets[bulletDirection];
   return (time) => {
     y -= BULLET_SPEED * (time - lastTime);
-    x += ((bulletDirection - 1) * BULLET_SPEED * (time - lastTime)) / 4;
+    x += BULLET_DRIFT[bulletDirection] * BULLET_SPEED * (time - lastTime);
 
     const hitBox = [x, y, bullet.width, bullet.height, bulletMask];
     // Check collision with hitables
@@ -1717,6 +1731,7 @@ function Enemy(
     deathBullets,
     homingAngle,
     waveInfo,
+    enemyLevel,
   ],
   x,
   killPoints,
@@ -1800,9 +1815,7 @@ function Enemy(
       );
       const fragAmount =
         (deathBullets ? 2 : 1) *
-        (currentLevel - LEVEL_SURVIVAL
-          ? integerNumberBetween(Math.random(), 1, currentLevel + 1)
-          : 0);
+        integerNumberBetween(Math.random(), 1, enemyLevel + 1);
       for (let i = 0; i < fragAmount; i++) {
         replaceFragmentIndices[
           integerNumberBetween(Math.random(), 0, destroyedSprites.length / 2)
@@ -2646,87 +2659,74 @@ function gameRender(now) {
   }
 
   // Should we fire?
-  if (
-    state == STATE_GAME &&
-    !shipDestroyed &&
-    !shipVictory &&
-    lastBullet + 200 < gameEllapsed
-  ) {
+  if (state == STATE_GAME && !shipDestroyed && !shipVictory) {
+    const sideLevel = settings.u[UPGRADE_SIDE];
     const [sideBullet, sideBulletPower] =
-      settings.u[UPGRADE_SIDE] > 2
+      sideLevel > 2
         ? [largeBullet, LARGE_BULLET_POWER]
         : [smallBullet, SMALL_BULLET_POWER];
-    if (
-      (settings.u[UPGRADE_SIDE] && !bulletRoundCount) ||
-      (settings.u[UPGRADE_SIDE] > 1 && bulletRoundCount == 1) ||
-      settings.u[UPGRADE_SIDE] > 3
-    ) {
+    const fireSideBullets = (directionLeft, directionRight) =>
       entities.push(
         Bullet(
           shipX - 25,
           shipY - Math.floor(shipHeight / 2),
           sideBullet,
-          BULLET_LEFT,
+          directionLeft,
           sideBulletPower,
           gameEllapsed
-        )
-      );
-      entities.push(
+        ),
         Bullet(
           shipX + 25,
           shipY - Math.floor(shipHeight / 2),
           sideBullet,
-          BULLET_RIGHT,
+          directionRight,
           sideBulletPower,
           gameEllapsed
         )
       );
+
+    // Extra side cannon levels fire on their own, faster, timer
+    const sideInterval = SIDE_CANNON_INTERVALS[sideLevel - 5];
+    if (sideInterval && lastSideBullet + sideInterval < gameEllapsed) {
+      fireSideBullets(BULLET_LEFT, BULLET_RIGHT);
+      fireSideBullets(BULLET_WIDE_LEFT, BULLET_WIDE_RIGHT);
+      lastSideBullet = gameEllapsed;
     }
 
-    const [mainBullet, mainBulletPower] =
-      settings.u[UPGRADE_GUN] > 2
-        ? [largeBullet, LARGE_BULLET_POWER]
-        : [smallBullet, SMALL_BULLET_POWER];
-    if (settings.u[UPGRADE_GUN]) {
-      // 2 bullets
-      entities.push(
-        Bullet(
-          shipX - 13,
-          shipY - Math.floor(shipHeight / 2) + 7,
-          mainBullet,
-          BULLET_STRAIGHT,
-          mainBulletPower,
-          gameEllapsed
-        )
-      );
-      entities.push(
-        Bullet(
-          shipX + 13,
-          shipY - Math.floor(shipHeight / 2) + 7,
-          mainBullet,
-          BULLET_STRAIGHT,
-          mainBulletPower,
-          gameEllapsed
-        )
-      );
-    }
+    if (lastBullet + 200 < gameEllapsed) {
+      if (
+        !sideInterval &&
+        ((sideLevel && !bulletRoundCount) ||
+          (sideLevel > 1 && bulletRoundCount == 1) ||
+          sideLevel > 3)
+      ) {
+        fireSideBullets(BULLET_LEFT, BULLET_RIGHT);
+      }
 
-    if (settings.u[UPGRADE_GUN] % 2 == 0) {
-      // 1 bullets
-      entities.push(
-        Bullet(
-          shipX,
-          shipY - Math.floor(shipHeight / 2) - 8,
-          mainBullet,
-          BULLET_STRAIGHT,
-          mainBulletPower,
-          gameEllapsed
+      const [mainBullet, mainBulletPower] =
+        settings.u[UPGRADE_GUN] > 2
+          ? [largeBullet, LARGE_BULLET_POWER]
+          : [smallBullet, SMALL_BULLET_POWER];
+      MAIN_GUN_OFFSETS[settings.u[UPGRADE_GUN]].map((offsetX) =>
+        entities.push(
+          Bullet(
+            shipX + offsetX,
+            // Outer bullets start further back, forming a V
+            shipY -
+              Math.floor(shipHeight / 2) -
+              8 +
+              Math.round((Math.abs(offsetX) * 15) / 13),
+            mainBullet,
+            BULLET_STRAIGHT,
+            mainBulletPower,
+            gameEllapsed
+          )
         )
       );
+      lastBullet = gameEllapsed;
+      sounds.bullet();
+      bulletRoundCount = (bulletRoundCount + 1) % 4;
     }
-    lastBullet = gameEllapsed;
-    sounds.bullet();
-    bulletRoundCount = (bulletRoundCount + 1) % 4;
   }
 
   if (nextDifficulty < gameEllapsed && !bossTime) {
